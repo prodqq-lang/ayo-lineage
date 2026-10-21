@@ -1,5 +1,14 @@
 --[[
-    QQ GUI  |  version 2.3
+    QQ GUI  |  Right Control = show / hide
+    Tabs: ESP, Visuals, Potions, Settings
+
+    Performance notes (loads in stages so it doesn't hitch / crash):
+      1. Window shell appears first
+      2. Tabs are built lazily the first time you open them
+      3. ESP starts after the UI is up, and scans in small chunks
+      4. Items are tracked with events (no constant workspace polling)
+      5. Only the nearest MAX_HIGHLIGHTS get a Highlight (Roblox caps ~31 anyway);
+         everything else still gets its billboard. Lower it if you still lag.
 ]]
 
 local Players = game:GetService("Players")
@@ -251,7 +260,7 @@ local content = new("Frame", {
 }, main)
 
 local footer = new("Frame", { Position = UDim2.new(0, 0, 1, -18), Size = UDim2.new(1, 0, 0, 18), BackgroundColor3 = Color3.fromRGB(14, 14, 14), BorderSizePixel = 0 }, main)
-local statusLbl = label(footer, "Version 2.3 (Info Update)", { Size = UDim2.new(0.5, 0, 1, 0), Position = UDim2.new(0, 10, 0, 0), TextColor3 = DIM, TextSize = 11 })
+local statusLbl = label(footer, "Version 2.4 (Enchants and more Info)", { Size = UDim2.new(0.5, 0, 1, 0), Position = UDim2.new(0, 10, 0, 0), TextColor3 = DIM, TextSize = 11 })
 label(footer, "RightCtrl = toggle", { Size = UDim2.new(0.5, -10, 1, 0), Position = UDim2.new(0.5, 0, 0, 0), TextColor3 = DIM, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Right })
 
 -- Tabs are built lazily: the builder only runs the first time the tab is opened
@@ -847,7 +856,7 @@ local spells = {
 	{ cat = 1, name = "Telorum", effects = "Summons a bow of light that you fire automatically. Automatically 'snaps' onto the nearest player that your bow is facing.",
 		cast = { "80-90%", "70-80% (Snap)" }, castR = { 80, 90 }, snapR = { 70, 80 }, obtained = "Scroll" },
 	{ cat = 1, name = "Nocere", effects = "A curse spell that can be used on a player who is knocked down. The victim receives a random injury (Bones, Chest Gashes, Concussion, Cataract, etc.).",
-		cast = { "70-80%" }, castR = { 70, 80 }, obtained = "Not listed" },
+		cast = { "70-80%" }, castR = { 70, 80 }, obtained = "Set your mana color/percentage to 70-80% as a mage and use the spell on a knocked-down player." },
 	{ cat = 1, name = "Armis", effects = "Disarms the target of their held weapon-type item.",
 		cast = { "40-60% mana to cast", "70-85% mana to cast (Snap)" }, castR = { 40, 60 }, snapR = { 70, 85 }, obtained = "Scrolls" },
 	{ cat = 1, name = "Gate", effects = "Allows easy transportation throughout the world.",
@@ -859,7 +868,7 @@ local spells = {
 	{ cat = 2, name = "Ignis", effects = "Creates a short wave of fire in front of the caster.",
 		cast = { "85-95% mana to cast", "45-60% mana to cast (Snap)" }, castR = { 85, 95 }, snapR = { 45, 60 }, obtained = "Scrolls" },
 	{ cat = 2, name = "Gelidus", effects = "Creates a close-range cone of ice in front of the caster.",
-		cast = { "80-100% mana to cast (same for snap)" }, castR = { 80, 100 }, snapR = { 80, 100 }, obtained = "Not listed" },
+		cast = { "80-100% mana to cast (same for snap)" }, castR = { 80, 100 }, snapR = { 80, 100 }, obtained = "Acquiring an Ice Essence" },
 	{ cat = 2, name = "Trahere", effects = "Gives mana to those who do not have it.",
 		cast = { "75-85% mana to cast" }, castR = { 75, 85 }, obtained = "Scrolls" },
 
@@ -1056,7 +1065,107 @@ local alignRows = {
 	{ "Rotting inside jail", "-% to your chaotic", "Can be avoided by combat logging or getting gripped in the prison.\n  \226\128\162 Cannot make you orderly.\n  \226\128\162 Can make you orderly neutral." },
 }
 
+-- Chaotic <-> Orderly scale with the classes at their alignment values
+local function buildAlignScale(p)
+	section(p, "Alignment Scale")
+
+	local SIDE = 70
+	local BAR_Y, BAR_H = 112, 24
+	local card = new("Frame", { Size = UDim2.new(1, 0, 0, 214), BackgroundColor3 = BG2, BorderSizePixel = 0 }, p)
+
+	local bar = new("Frame", {
+		Position = UDim2.new(0, SIDE, 0, BAR_Y),
+		Size = UDim2.new(1, -SIDE * 2, 0, BAR_H),
+		BackgroundTransparency = 1,
+	}, card)
+
+	-- scale runs from 160 chaotic (left) to 60 orderly (right); chaotic values are negative
+	local function sx(v) return (160 + v) / 220 end
+
+	local RED_BAR = Color3.fromRGB(235, 30, 30)
+	local BLUE_BAR = Color3.fromRGB(30, 150, 255)
+
+	for i = 0, 21 do
+		new("Frame", {
+			Position = UDim2.new(i / 22, 0, 0, 0),
+			Size = UDim2.new(1 / 22, -1, 1, 0),
+			BackgroundColor3 = (i < 16) and RED_BAR or BLUE_BAR,
+			BorderSizePixel = 0,
+		}, bar)
+	end
+
+	label(card, "Chaotic", { Position = UDim2.new(0, 8, 0, BAR_Y), Size = UDim2.new(0, SIDE - 10, 0, BAR_H), TextSize = 12 })
+	label(card, "Orderly", { Position = UDim2.new(1, -(SIDE - 6), 0, BAR_Y), Size = UDim2.new(0, SIDE - 8, 0, BAR_H), TextSize = 12 })
+
+	-- numbers under the bar (160 ... 0 ... 60)
+	for v = -160, 60, 10 do
+		label(bar, tostring(math.abs(v)), {
+			AnchorPoint = Vector2.new(0.5, 0),
+			Position = UDim2.new(sx(v), 0, 1, 3),
+			Size = UDim2.fromOffset(24, 12),
+			BackgroundTransparency = 0,
+			BackgroundColor3 = BG2,
+			TextSize = 10,
+			TextColor3 = WHITE,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			ZIndex = 3,
+		})
+	end
+
+	-- classes above the bar: { value, names, extra lift }
+	local above = {
+		{ -155, { "Wraith Knight" }, 0 },
+		{ -120, { "Church Knight", "Oni", "Abyss Walker", "Master Necromancer", "Faceless", "Shinobi" }, 0 },
+		{ -60, { "Necromancer" }, 0 },
+		{ -40, { "Akuma" }, 18 },
+		{ -30, { "Assassin" }, 0 },
+		{ 0, { "Ultra Bard", "Samurai", "Druid", "Botanist" }, 0 },
+		{ 35, { "Sigil Knight", "Spy" }, 0 },
+		{ 60, { "Master Illusionist", "Sigil Knight Commander", "Dragon Sage", "Dragon Slayer" }, 0 },
+	}
+	for _, a in ipairs(above) do
+		local v, names, lift = a[1], a[2], a[3]
+		new("Frame", {
+			Position = UDim2.new(sx(v), 0, 0, -(8 + lift)),
+			Size = UDim2.new(0, 1, 0, 8 + lift),
+			BackgroundColor3 = WHITE, BorderSizePixel = 0,
+		}, bar)
+		label(bar, table.concat(names, "\n"), {
+			AnchorPoint = Vector2.new(0.5, 1),
+			Position = UDim2.new(sx(v), 0, 0, -(10 + lift)),
+			Size = UDim2.fromOffset(150, 12 * #names),
+			TextSize = 11,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			TextYAlignment = Enum.TextYAlignment.Bottom,
+		})
+	end
+
+	-- classes below the bar: { value, text, stem length, label alignment }
+	local below = {
+		{ 5, "Monk (5)", 40, "right" },
+		{ 10, "Dragon Knight (10)", 56, "center" },
+		{ 40, "Ronin", 40, "center" },
+		{ 50, "Illusionist", 56, "center" },
+	}
+	for _, b in ipairs(below) do
+		local v, text, len, al = b[1], b[2], b[3], b[4]
+		new("Frame", {
+			Position = UDim2.new(sx(v), 0, 1, 0),
+			Size = UDim2.new(0, 1, 0, len),
+			BackgroundColor3 = WHITE, BorderSizePixel = 0,
+		}, bar)
+		label(bar, text, {
+			AnchorPoint = Vector2.new(al == "right" and 1 or 0.5, 0),
+			Position = UDim2.new(sx(v), 0, 1, len + 1),
+			Size = UDim2.fromOffset(130, 12),
+			TextSize = 11,
+			TextXAlignment = al == "right" and Enum.TextXAlignment.Right or Enum.TextXAlignment.Center,
+		})
+	end
+end
+
 local function buildAlignment(p)
+	buildAlignScale(p)
 	section(p, "Alignment Obtaining, Gains/Losses")
 
 	local COL_ACTION, COL_OUT, COL_NOTES = 200, 110, 340
@@ -1107,6 +1216,95 @@ local function buildAlignment(p)
 	end
 end
 
+--------------------------------------------------------------------
+-- Enchants
+--------------------------------------------------------------------
+local enchants = {
+	{ gem = "Ruby", color = Color3.fromRGB(220, 40, 60), text = Color3.fromRGB(255, 150, 150),
+		desc = "Ignites players hit on fire whenever it procs.",
+		notes = "The fire is identical to any normal fire and can be extinguished when the target rolls.\n  \226\128\162 Azaels are immune and Vampire will suffer the fire weakness." },
+	{ gem = "Opal", color = Color3.fromRGB(170, 255, 220), text = Color3.fromRGB(200, 255, 235),
+		desc = "Deals 1.25x more damage against undead monsters and negates vampirism buffs on proc.",
+		notes = "Said monsters are Shriekers, Sealed Shriekers, and Zscrooms." },
+	{ gem = "Sapphire", color = Color3.fromRGB(50, 90, 255), text = Color3.fromRGB(150, 160, 255),
+		desc = "Freezes the target in ice and progressively slows their movement.",
+		notes = "" },
+	{ gem = "Emerald", color = Color3.fromRGB(50, 220, 70), text = Color3.fromRGB(170, 255, 170),
+		desc = "Covers the target in poison on proc.",
+		notes = "Similarly to a ruby's fire, the poison is identical to any normal poison.\n  \226\128\162 Scrooms, Gaian, and Metascroom are immune to its effects." },
+	{ gem = "Diamond", color = Color3.fromRGB(90, 230, 255), text = Color3.fromRGB(180, 240, 255),
+		desc = "Occasionally zaps the target with lightning, stunning them for twice the normal amount.",
+		notes = "This enchant has the lowest chance to proc of any other." },
+	{ gem = "Nightstone", color = Color3.fromRGB(80, 60, 140), text = Color3.fromRGB(200, 160, 235),
+		desc = "Temporarily blinds the target whenever they are hit.",
+		notes = "This enchant is largely useless as it only blinds the target when they are stunned, in which seeing doesn't matter.\n  \226\128\162 Will proc 100% of the time." },
+}
+
+local function buildEnchants(p)
+	section(p, "Enchants")
+
+	local COL_GEM, COL_DESC, COL_NOTES = 100, 250, 300
+
+	local function cell(parent, w, text, color, order)
+		local l = new("TextLabel", {
+			Size = UDim2.new(0, w, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			Font = FONT,
+			TextSize = 12,
+			TextColor3 = color or WHITE,
+			TextWrapped = true,
+			RichText = true,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Text = text,
+			LayoutOrder = order,
+		}, parent)
+		new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6), PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6) }, l)
+		return l
+	end
+
+	local function row(bg)
+		local r = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundColor3 = bg,
+			BorderSizePixel = 0,
+		}, p)
+		new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder }, r)
+		return r
+	end
+
+	local head = row(BG3)
+	cell(head, COL_GEM, "<b>Gem</b>", ACCENT, 1)
+	cell(head, COL_DESC, "<b>Description</b>", ACCENT, 2)
+	cell(head, COL_NOTES, "<b>Notes</b>", ACCENT, 3)
+
+	for _, e in ipairs(enchants) do
+		local r = row(BG2)
+
+		-- gem cell: coloured gem chip + name
+		local g = new("Frame", { Size = UDim2.fromOffset(COL_GEM, 56), BackgroundTransparency = 1, LayoutOrder = 1 }, r)
+		local chip = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0),
+			Position = UDim2.new(0.5, 0, 0, 7),
+			Size = UDim2.fromOffset(22, 22),
+			BackgroundColor3 = e.color,
+			BorderSizePixel = 0,
+			Rotation = 45,
+		}, g)
+		new("UICorner", { CornerRadius = UDim.new(0, 4) }, chip)
+		new("UIStroke", { Color = e.text, Transparency = 0.4 }, chip)
+		label(g, e.gem, {
+			Position = UDim2.new(0, 0, 0, 34), Size = UDim2.new(1, 0, 0, 16),
+			TextXAlignment = Enum.TextXAlignment.Center, TextColor3 = e.text, TextSize = 12,
+		})
+
+		cell(r, COL_DESC, e.desc, WHITE, 2)
+		cell(r, COL_NOTES, e.notes, WHITE, 3)
+	end
+end
+
 local function unload()
 	running = false
 	scanId += 1
@@ -1141,6 +1339,7 @@ task.spawn(function()
 	addTab("Potions", buildPotions)
 	addTab("Spells", buildSpells)
 	addTab("Alignment", buildAlignment)
+	addTab("Enchants", buildEnchants)
 	addTab("Settings", buildSettings)
 	selectTab("ESP")
 	task.wait(0.1)
@@ -1150,7 +1349,7 @@ task.spawn(function()
 	task.wait(0.1)
 
 	-- stage 3: prebuild the remaining tabs one per frame so opening them is instant
-	for _, name in ipairs({ "Visuals", "Potions", "Spells", "Alignment", "Settings" }) do
+	for _, name in ipairs({ "Visuals", "Potions", "Spells", "Alignment", "Enchants", "Settings" }) do
 		if not running then return end
 		if not built[name] then
 			built[name] = true
@@ -1159,5 +1358,5 @@ task.spawn(function()
 		task.wait(0.1)
 	end
 
-	statusLbl.Text = "Version 2.3 (Info Update)"
+	statusLbl.Text = "Version 2.4 (Enchants and more Info)"
 end)
