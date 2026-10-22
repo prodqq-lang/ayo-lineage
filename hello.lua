@@ -440,13 +440,13 @@ local function syncNpcs()
 	end
 end
 
--- Campfire ESP: models named "Campfire" inside Workspace.Maps
+-- Campfire ESP: models named "Campfire" inside Workspace.Map
 -- (checks the folder's children and one level below, in case campfires sit inside map models)
 local CAMPFIRE_COLOR = Color3.fromRGB(255, 150, 40)
 local function syncCampfires()
 	local wanted = {}
 	if cfg.campfire then
-		local maps = Workspace:FindFirstChild("Maps")
+		local maps = Workspace:FindFirstChild("Map")
 		if maps then
 			for _, c in ipairs(maps:GetChildren()) do
 				if c.Name == "Campfire" and c:IsA("PVInstance") then
