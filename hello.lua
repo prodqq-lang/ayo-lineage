@@ -32,6 +32,7 @@ local cfg = {
 	merchant = true,
 	medic = true,
 	antiquarian = true,
+	campfire = true,
 	live = true,
 	fullbright = false,
 	transparency = 0.5, -- fill transparency for ALL highlights
@@ -260,7 +261,7 @@ local content = new("Frame", {
 }, main)
 
 local footer = new("Frame", { Position = UDim2.new(0, 0, 1, -18), Size = UDim2.new(1, 0, 0, 18), BackgroundColor3 = Color3.fromRGB(14, 14, 14), BorderSizePixel = 0 }, main)
-local statusLbl = label(footer, "Version 2.4 (Enchants and more Info)", { Size = UDim2.new(0.5, 0, 1, 0), Position = UDim2.new(0, 10, 0, 0), TextColor3 = DIM, TextSize = 11 })
+local statusLbl = label(footer, "Version 2.5 (Fire Update)", { Size = UDim2.new(0.5, 0, 1, 0), Position = UDim2.new(0, 10, 0, 0), TextColor3 = DIM, TextSize = 11 })
 label(footer, "RightCtrl = toggle", { Size = UDim2.new(0.5, -10, 1, 0), Position = UDim2.new(0.5, 0, 0, 0), TextColor3 = DIM, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Right })
 
 -- Tabs are built lazily: the builder only runs the first time the tab is opened
@@ -439,6 +440,32 @@ local function syncNpcs()
 	end
 end
 
+-- Campfire ESP: models named "Campfire" inside Workspace.Maps
+-- (checks the folder's children and one level below, in case campfires sit inside map models)
+local CAMPFIRE_COLOR = Color3.fromRGB(255, 150, 40)
+local function syncCampfires()
+	local wanted = {}
+	if cfg.campfire then
+		local maps = Workspace:FindFirstChild("Maps")
+		if maps then
+			for _, c in ipairs(maps:GetChildren()) do
+				if c.Name == "Campfire" and c:IsA("PVInstance") then
+					wanted[c] = true
+					addEntry(c, "campfire", "Campfire", CAMPFIRE_COLOR)
+				elseif c:IsA("Model") or c:IsA("Folder") then
+					for _, d in ipairs(c:GetChildren()) do
+						if d.Name == "Campfire" and d:IsA("PVInstance") then
+							wanted[d] = true
+							addEntry(d, "campfire", "Campfire", CAMPFIRE_COLOR)
+						end
+					end
+				end
+			end
+		end
+	end
+	reconcile("campfire", wanted)
+end
+
 local function syncLive()
 	if not cfg.live then return end
 	local wanted = {}
@@ -556,6 +583,8 @@ local function startEsp()
 		while running do
 			syncNpcs()
 			task.wait()
+			syncCampfires()
+			task.wait()
 			syncLive()
 			task.wait()
 			for o, t in pairs(pending) do
@@ -633,6 +662,11 @@ local function buildEsp(p)
 		cfg.antiquarian = v
 		syncNpcs()
 	end)
+	section(p, "Map")
+	toggle(p, "Campfire ESP  (orange)", cfg.campfire, function(v)
+		cfg.campfire = v
+		syncCampfires()
+	end)
 	section(p, "Live")
 	toggle(p, "Live ESP", cfg.live, function(v)
 		cfg.live = v
@@ -640,7 +674,7 @@ local function buildEsp(p)
 	end)
 	section(p, "Colors")
 	label(p, "  Items = their own color   |   Live = purple", { Size = UDim2.new(1, 0, 0, 20), TextColor3 = DIM, TextSize = 12 })
-	label(p, "  Merchant = red  |  Doctor = white  |  Antiquarian = blue", { Size = UDim2.new(1, 0, 0, 20), TextColor3 = DIM, TextSize = 12 })
+	label(p, "  Merchant = red  |  Doctor = white  |  Antiquarian = blue  |  Campfire = orange", { Size = UDim2.new(1, 0, 0, 20), TextColor3 = DIM, TextSize = 12 })
 end
 
 local function buildVisuals(p)
@@ -1358,5 +1392,5 @@ task.spawn(function()
 		task.wait(0.1)
 	end
 
-	statusLbl.Text = "Version 2.4 (Enchants and more Info)"
+	statusLbl.Text = "Version 2.5 (Fire Update)"
 end)
