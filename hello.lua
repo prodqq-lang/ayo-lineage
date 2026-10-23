@@ -22,8 +22,8 @@ local lp = Players.LocalPlayer
 -- Config
 --------------------------------------------------------------------
 local MAX_HIGHLIGHTS = 25   -- lower this if the game still struggles
-local TICK_RATE = 0.2       -- how often distances / highlight ranking update (seconds)
-local SLOW_TICK = 1         -- how often Merchant / Live / pending items are re-checked
+local TICK_RATE = 0.3      -- how often distances / highlight ranking update (seconds)
+local SLOW_TICK = 2        -- how often Merchant / Live / pending items are re-checked
 local SCAN_CHUNK = 100      -- children processed per frame during the first item scan
 
 local cfg = {
@@ -59,6 +59,108 @@ local NPC_RULES = {
 	{ key = "antiquarian", model = "Antiquarian", color = ESP_BLUE },
 }
 
+--------------------------------------------------------------------
+-- Theme core
+-- Every UI colour that matches one of the default theme colours is registered under a
+-- "role" (ACCENT, BG, ...). Changing the theme just re-colours those registered objects.
+--------------------------------------------------------------------
+local HttpService = game:GetService("HttpService")
+local THEME_FILE = "QQGui_theme.json"
+
+local ROLES = { "ACCENT", "BG", "BG2", "BG3", "DARK", "DIM", "TEXT" } -- editable roles
+local DEFAULT_THEME = {
+	ACCENT = ACCENT, BG = BG, BG2 = BG2, BG3 = BG3,
+	DARK = Color3.fromRGB(14, 14, 14), DIM = DIM, TEXT = WHITE,
+}
+-- the ORIGINAL colours, used only to recognise which role a new object belongs to
+local ROLE_MATCH = {
+	{ "ACCENT", ACCENT }, { "BG", BG }, { "BG2", BG2 }, { "BG3", BG3 },
+	{ "DARK", DEFAULT_THEME.DARK }, { "DIM", DIM }, { "TEXT", WHITE },
+	{ "STROKE", Color3.fromRGB(45, 45, 45) }, { "LINE", Color3.fromRGB(90, 45, 60) },
+}
+local COLOR_PROPS = { "BackgroundColor3", "TextColor3", "ScrollBarImageColor3", "Color" }
+
+local T = {}            -- the current theme
+local themed = {}       -- { instance, property, role }
+local themeRefreshers = {} -- functions re-run after a theme change (selected tabs, rich text...)
+local noTheme = false   -- set while building ESP labels so item colours never get re-themed
+
+local function colorHex(c)
+	return string.format("#%02X%02X%02X", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
+end
+
+local function hexToColor(s)
+	local clean = tostring(s):gsub("%s", ""):gsub("^#", "")
+	local n = clean:match("^(%x%x%x%x%x%x)$")
+	if not n then return nil end
+	return Color3.fromRGB(tonumber(n:sub(1, 2), 16), tonumber(n:sub(3, 4), 16), tonumber(n:sub(5, 6), 16))
+end
+
+local function deriveTheme()
+	T.STROKE = T.BG3:Lerp(T.TEXT, 0.12)
+	T.LINE = T.ACCENT:Lerp(T.DARK, 0.55)
+end
+
+for k, v in pairs(DEFAULT_THEME) do T[k] = v end
+deriveTheme()
+
+-- load a saved theme (only works in executors that have file functions)
+do
+	local ok, data = pcall(function()
+		if isfile and readfile and isfile(THEME_FILE) then
+			return HttpService:JSONDecode(readfile(THEME_FILE))
+		end
+	end)
+	if ok and type(data) == "table" then
+		for _, r in ipairs(ROLES) do
+			local c = type(data[r]) == "string" and hexToColor(data[r])
+			if c then T[r] = c end
+		end
+		deriveTheme()
+	end
+end
+
+local function registerTheme(inst, props)
+	for _, prop in ipairs(COLOR_PROPS) do
+		local v = props[prop]
+		if typeof(v) == "Color3" then
+			for _, m in ipairs(ROLE_MATCH) do
+				if m[2] == v then
+					themed[#themed + 1] = { inst, prop, m[1] }
+					inst[prop] = T[m[1]] -- start in the current theme
+					break
+				end
+			end
+		end
+	end
+end
+
+local function applyTheme()
+	deriveTheme()
+	for i = #themed, 1, -1 do
+		local e = themed[i]
+		if e[1].Parent == nil then
+			table.remove(themed, i) -- destroyed
+		else
+			e[1][e[2]] = T[e[3]]
+		end
+	end
+	for _, f in ipairs(themeRefreshers) do pcall(f) end
+end
+
+local saveToken = 0
+local function scheduleSave()
+	if not writefile then return end
+	saveToken += 1
+	local mine = saveToken
+	task.delay(0.6, function()
+		if mine ~= saveToken then return end
+		local d = {}
+		for _, r in ipairs(ROLES) do d[r] = colorHex(T[r]) end
+		pcall(writefile, THEME_FILE, HttpService:JSONEncode(d))
+	end)
+end
+
 local running = true
 local connections = {}
 local function connect(sig, fn)
@@ -83,6 +185,7 @@ end
 local function new(class, props, parent)
 	local o = Instance.new(class)
 	for k, v in pairs(props or {}) do o[k] = v end
+	if props and not noTheme then registerTheme(o, props) end
 	if parent then o.Parent = parent end
 	return o
 end
@@ -197,6 +300,12 @@ local function slider(parent, text, min, max, def, dec, cb)
 			dragging = false
 		end
 	end)
+	-- returns a setter so the slider can be moved from code (without firing the callback)
+	return function(v)
+		local r = math.clamp((v - min) / (max - min), 0, 1)
+		fill.Size = UDim2.new(r, 0, 1, 0)
+		val.Text = string.format("%." .. dec .. "f", v)
+	end
 end
 
 local function button(parent, text, cb)
@@ -250,7 +359,7 @@ do -- dragging
 	end)
 end
 
-local tabBar = new("Frame", { Position = UDim2.fromOffset(0, 29), Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = Color3.fromRGB(17, 17, 17), BorderSizePixel = 0 }, main)
+local tabBar = new("Frame", { Position = UDim2.fromOffset(0, 29), Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = Color3.fromRGB(14, 14, 14), BorderSizePixel = 0 }, main)
 new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6) }, tabBar)
 new("UIPadding", { PaddingLeft = UDim.new(0, 8) }, tabBar)
 
@@ -261,11 +370,12 @@ local content = new("Frame", {
 }, main)
 
 local footer = new("Frame", { Position = UDim2.new(0, 0, 1, -18), Size = UDim2.new(1, 0, 0, 18), BackgroundColor3 = Color3.fromRGB(14, 14, 14), BorderSizePixel = 0 }, main)
-local statusLbl = label(footer, "Version 2.5 (Fire Update)", { Size = UDim2.new(0.5, 0, 1, 0), Position = UDim2.new(0, 10, 0, 0), TextColor3 = DIM, TextSize = 11 })
+local statusLbl = label(footer, "Version 2.6 (Colors)", { Size = UDim2.new(0.5, 0, 1, 0), Position = UDim2.new(0, 10, 0, 0), TextColor3 = DIM, TextSize = 11 })
 label(footer, "RightCtrl = toggle", { Size = UDim2.new(0.5, -10, 1, 0), Position = UDim2.new(0.5, 0, 0, 0), TextColor3 = DIM, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Right })
 
 -- Tabs are built lazily: the builder only runs the first time the tab is opened
 local pages, tabButtons, builders, built = {}, {}, {}, {}
+local currentTab = "ESP"
 
 local function selectTab(name)
 	if not built[name] and builders[name] then
@@ -274,10 +384,12 @@ local function selectTab(name)
 	end
 	for n, p in pairs(pages) do p.Visible = (n == name) end
 	for n, b in pairs(tabButtons) do
-		b.Button.TextColor3 = (n == name) and ACCENT or DIM
+		b.Button.TextColor3 = (n == name) and T.ACCENT or T.DIM
 		b.Line.Visible = (n == name)
 	end
+	currentTab = name
 end
+table.insert(themeRefreshers, function() selectTab(currentTab) end)
 
 local function addTab(name, builder)
 	local btn = new("TextButton", {
@@ -351,6 +463,7 @@ local function addEntry(inst, kind, name, color)
 		return
 	end
 
+	noTheme = true -- ESP colours (item colours etc.) must never be re-themed
 	local bb = new("BillboardGui", {
 		Adornee = getAnchor(inst) or inst,
 		AlwaysOnTop = true,
@@ -371,6 +484,7 @@ local function addEntry(inst, kind, name, color)
 		Text = name,
 	}, bb)
 
+	noTheme = false
 	e = { kind = kind, name = name, color = color, bb = bb, lbl = lbl, hl = nil, conns = {}, dist = math.huge, lastDist = -1 }
 	entries[inst] = e
 
@@ -442,28 +556,41 @@ end
 
 -- Campfire ESP: models named "Campfire" inside Workspace.Map
 -- (checks the folder's children and one level below, in case campfires sit inside map models)
+-- Event driven: scanned ONCE (chunked, yielding) then new campfires are caught as they appear.
+-- Nothing touches the big Map folder in the repeating loops anymore (that was the timed lag).
 local CAMPFIRE_COLOR = Color3.fromRGB(255, 150, 40)
-local function syncCampfires()
-	local wanted = {}
-	if cfg.campfire then
-		local maps = Workspace:FindFirstChild("Map")
-		if maps then
-			for _, c in ipairs(maps:GetChildren()) do
-				if c.Name == "Campfire" and c:IsA("PVInstance") then
-					wanted[c] = true
-					addEntry(c, "campfire", "Campfire", CAMPFIRE_COLOR)
-				elseif c:IsA("Model") or c:IsA("Folder") then
-					for _, d in ipairs(c:GetChildren()) do
-						if d.Name == "Campfire" and d:IsA("PVInstance") then
-							wanted[d] = true
-							addEntry(d, "campfire", "Campfire", CAMPFIRE_COLOR)
-						end
-					end
-				end
-			end
-		end
+local campScanId = 0
+local campHooked = false
+
+local function considerCampfire(o)
+	if cfg.campfire and o.Name == "Campfire" and o:IsA("PVInstance") and not entries[o] then
+		addEntry(o, "campfire", "Campfire", CAMPFIRE_COLOR)
 	end
-	reconcile("campfire", wanted)
+end
+
+local function scanCampfires()
+	campScanId += 1
+	local myId = campScanId
+	local map = Workspace:FindFirstChild("Map")
+	if not map then return end
+	local n = 0
+	for _, d in ipairs(map:GetDescendants()) do
+		if not running or not cfg.campfire or myId ~= campScanId then return end
+		if d.Name == "Campfire" then considerCampfire(d) end
+		n += 1
+		if n % 250 == 0 then task.wait() end
+	end
+end
+
+local function hookCampfires()
+	if campHooked then return end
+	local map = Workspace:WaitForChild("Map", 30)
+	if not map or not running then return end
+	campHooked = true
+	connect(map.DescendantAdded, function(o)
+		if o.Name == "Campfire" then considerCampfire(o) end
+	end)
+	scanCampfires()
 end
 
 local function syncLive()
@@ -482,11 +609,16 @@ local function syncLive()
 end
 
 local function instPos(inst, e)
-	local a = getAnchor(inst)
-	if a then
-		if e and e.bb.Adornee ~= a then e.bb.Adornee = a end -- keep the billboard on the body
-		return a.Position
+	-- anchor part is cached so we don't search the model every tick
+	local a = e and e.anchor
+	if not a or not a.Parent then
+		a = getAnchor(inst)
+		if e then
+			e.anchor = a
+			if a and e.bb.Adornee ~= a then e.bb.Adornee = a end
+		end
 	end
+	if a then return a.Position end
 	if inst:IsA("Model") then return inst:GetPivot().Position end
 	return inst.Position
 end
@@ -569,6 +701,7 @@ local function startEsp()
 	end)
 
 	task.spawn(scanItems) -- first scan is chunked
+	task.spawn(hookCampfires)
 
 	-- fast loop: distances / ranking
 	task.spawn(function()
@@ -582,8 +715,6 @@ local function startEsp()
 	task.spawn(function()
 		while running do
 			syncNpcs()
-			task.wait()
-			syncCampfires()
 			task.wait()
 			syncLive()
 			task.wait()
@@ -665,7 +796,7 @@ local function buildEsp(p)
 	section(p, "Map")
 	toggle(p, "Campfire ESP  (orange)", cfg.campfire, function(v)
 		cfg.campfire = v
-		syncCampfires()
+		if v then task.spawn(scanCampfires) else campScanId += 1 removeKind("campfire") end
 	end)
 	section(p, "Live")
 	toggle(p, "Live ESP", cfg.live, function(v)
@@ -772,8 +903,8 @@ local function hex(c)
 end
 
 local function potionText(po)
-	local acc = hex(ACCENT)
-	local dim = hex(DIM)
+	local acc = hex(T.ACCENT)
+	local dim = hex(T.DIM)
 	local s = {}
 	table.insert(s, string.format('<font color="%s"><b>%s</b></font>', acc, po.name))
 	table.insert(s, "")
@@ -837,13 +968,16 @@ local function buildPotions(p)
 	}, detail)
 
 	local btns = {}
+	local cur = 1
 	local function pick(i)
+		cur = i
 		body.Text = potionText(potions[i])
 		for j, b in ipairs(btns) do
-			b.TextColor3 = (j == i) and ACCENT or DIM
-			b.BackgroundColor3 = (j == i) and BG3 or BG2
+			b.TextColor3 = (j == i) and T.ACCENT or T.DIM
+			b.BackgroundColor3 = (j == i) and T.BG3 or T.BG2
 		end
 	end
+	table.insert(themeRefreshers, function() pick(cur) end)
 	for i, po in ipairs(potions) do
 		local b = new("TextButton", {
 			Size = UDim2.new(1, 0, 0, 24),
@@ -922,8 +1056,8 @@ local spells = {
 }
 
 local function spellText(sp)
-	local acc = hex(ACCENT)
-	local dim = hex(DIM)
+	local acc = hex(T.ACCENT)
+	local dim = hex(T.DIM)
 	local cat = spellCats[sp.cat]
 	local s = {}
 	table.insert(s, string.format('<font color="%s"><b>%s</b></font>', acc, sp.name))
@@ -1044,16 +1178,19 @@ local function buildSpells(p)
 	}, detail)
 
 	local btns = {}
+	local cur = 1
 	local function pick(i)
+		cur = i
 		local sp = spells[i]
 		body.Text = spellText(sp)
 		setBand(castBand, sp.castR)
 		setBand(snapBand, sp.snapR)
 		for j, b in pairs(btns) do
-			b.TextColor3 = (j == i) and ACCENT or DIM
-			b.BackgroundColor3 = (j == i) and BG3 or BG2
+			b.TextColor3 = (j == i) and T.ACCENT or T.DIM
+			b.BackgroundColor3 = (j == i) and T.BG3 or T.BG2
 		end
 	end
+	table.insert(themeRefreshers, function() pick(cur) end)
 
 	local order = 0
 	for c, cat in ipairs(spellCats) do
@@ -1348,9 +1485,154 @@ local function unload()
 	gui:Destroy()
 end
 
+--------------------------------------------------------------------
+-- Theme editor (Settings tab)
+--------------------------------------------------------------------
+local function rgb(r, g, b) return Color3.fromRGB(r, g, b) end
+
+local PRESETS = {
+	{ "Rose", { ACCENT = rgb(240, 105, 140), BG = rgb(20, 20, 20), BG2 = rgb(26, 26, 26), BG3 = rgb(32, 32, 32), DARK = rgb(14, 14, 14), DIM = rgb(120, 120, 120), TEXT = rgb(230, 230, 230) } },
+	{ "Ocean", { ACCENT = rgb(70, 160, 255), BG = rgb(14, 18, 24), BG2 = rgb(19, 24, 32), BG3 = rgb(26, 33, 44), DARK = rgb(9, 12, 17), DIM = rgb(110, 125, 145), TEXT = rgb(225, 232, 240) } },
+	{ "Mint", { ACCENT = rgb(80, 220, 150), BG = rgb(16, 22, 20), BG2 = rgb(21, 29, 26), BG3 = rgb(28, 38, 34), DARK = rgb(10, 15, 13), DIM = rgb(115, 135, 125), TEXT = rgb(225, 240, 232) } },
+	{ "Violet", { ACCENT = rgb(170, 110, 255), BG = rgb(20, 17, 27), BG2 = rgb(26, 22, 35), BG3 = rgb(34, 29, 46), DARK = rgb(13, 11, 18), DIM = rgb(128, 120, 145), TEXT = rgb(232, 228, 242) } },
+	{ "Ember", { ACCENT = rgb(255, 140, 50), BG = rgb(24, 18, 14), BG2 = rgb(31, 23, 18), BG3 = rgb(40, 30, 23), DARK = rgb(16, 12, 9), DIM = rgb(140, 125, 110), TEXT = rgb(240, 232, 225) } },
+	{ "Mono", { ACCENT = rgb(230, 230, 230), BG = rgb(18, 18, 18), BG2 = rgb(24, 24, 24), BG3 = rgb(31, 31, 31), DARK = rgb(12, 12, 12), DIM = rgb(115, 115, 115), TEXT = rgb(215, 215, 215) } },
+	{ "Light", { ACCENT = rgb(220, 60, 110), BG = rgb(238, 238, 240), BG2 = rgb(228, 228, 232), BG3 = rgb(216, 216, 222), DARK = rgb(205, 205, 212), DIM = rgb(110, 110, 120), TEXT = rgb(30, 30, 35) } },
+}
+
+local ROLE_INFO = {
+	{ "ACCENT", "Accent" },
+	{ "BG", "Background" },
+	{ "BG2", "Panels" },
+	{ "BG3", "Controls" },
+	{ "DARK", "Title / footer" },
+	{ "DIM", "Dim text" },
+	{ "TEXT", "Text" },
+}
+
+local function buildThemeEditor(p)
+	section(p, "Theme Editor")
+
+	local selected = "ACCENT"
+	local hsv = { 0, 0, 0 }
+	local rows = {}
+	local setH, setS, setV
+
+	local function commit()
+		applyTheme()
+		scheduleSave()
+	end
+
+	local function loadSelected()
+		local h, s, v = T[selected]:ToHSV()
+		hsv = { h, s, v }
+		if setH then setH(h * 360) end
+		if setS then setS(s * 100) end
+		if setV then setV(v * 100) end
+	end
+
+	local function refreshRows()
+		for role, r in pairs(rows) do
+			r.swatch.BackgroundColor3 = T[role]
+			if not r.box:IsFocused() then r.box.Text = colorHex(T[role]) end
+			r.btn.BackgroundColor3 = (role == selected) and T.BG3 or T.BG2
+			r.name.TextColor3 = (role == selected) and T.ACCENT or T.TEXT
+		end
+	end
+	table.insert(themeRefreshers, refreshRows)
+
+	-- presets
+	label(p, "  Presets", { Size = UDim2.new(1, 0, 0, 18), TextColor3 = DIM, TextSize = 12 })
+	local grid = new("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1 }, p)
+	new("UIGridLayout", { CellSize = UDim2.fromOffset(92, 24), CellPadding = UDim2.fromOffset(6, 6) }, grid)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingBottom = UDim.new(0, 4) }, grid)
+
+	local function applyPreset(colors)
+		for _, r in ipairs(ROLES) do T[r] = colors[r] end
+		loadSelected()
+		commit()
+	end
+
+	for _, pr in ipairs(PRESETS) do
+		local b = new("TextButton", {
+			BackgroundColor3 = BG3, BorderSizePixel = 0,
+			Font = FONT, Text = pr[1], TextColor3 = WHITE, TextSize = 12, AutoButtonColor = true,
+		}, grid)
+		noTheme = true -- the preview stripe shows the preset's own colour, so don't re-theme it
+		new("Frame", { Size = UDim2.new(0, 4, 1, 0), BackgroundColor3 = pr[2].ACCENT, BorderSizePixel = 0 }, b)
+		noTheme = false
+		b.MouseButton1Click:Connect(function() applyPreset(pr[2]) end)
+	end
+
+	-- colour list
+	label(p, "  Colors (click one, then use the sliders or type a hex code)", { Size = UDim2.new(1, 0, 0, 18), TextColor3 = DIM, TextSize = 12 })
+	for _, info in ipairs(ROLE_INFO) do
+		local role, title = info[1], info[2]
+		local btn = new("TextButton", {
+			Size = UDim2.new(1, 0, 0, 26), BackgroundColor3 = BG2, BorderSizePixel = 0,
+			Text = "", AutoButtonColor = false,
+		}, p)
+		noTheme = true
+		local swatch = new("Frame", {
+			Position = UDim2.fromOffset(8, 4), Size = UDim2.fromOffset(18, 18),
+			BackgroundColor3 = T[role], BorderSizePixel = 0,
+		}, btn)
+		new("UIStroke", { Color = rgb(95, 95, 95) }, swatch)
+		noTheme = false
+		local name = label(btn, title, { Position = UDim2.fromOffset(36, 0), Size = UDim2.new(1, -140, 1, 0) })
+		local box = new("TextBox", {
+			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.fromOffset(84, 18),
+			BackgroundColor3 = rgb(14, 14, 14), BorderSizePixel = 0,
+			Font = FONT, TextSize = 12, TextColor3 = WHITE, Text = colorHex(T[role]),
+			ClearTextOnFocus = false,
+		}, btn)
+		rows[role] = { btn = btn, swatch = swatch, name = name, box = box }
+
+		btn.MouseButton1Click:Connect(function()
+			selected = role
+			loadSelected()
+			refreshRows()
+		end)
+		box.FocusLost:Connect(function()
+			local c = hexToColor(box.Text)
+			if c then
+				T[role] = c
+				if role == selected then loadSelected() end
+				commit()
+			else
+				box.Text = colorHex(T[role]) -- invalid hex, put the old value back
+			end
+		end)
+	end
+
+	-- sliders for the selected colour
+	label(p, "  Edit selected color", { Size = UDim2.new(1, 0, 0, 18), TextColor3 = DIM, TextSize = 12 })
+	local function onSlide(idx, scale)
+		return function(v)
+			hsv[idx] = v / scale
+			T[selected] = Color3.fromHSV(hsv[1], hsv[2], hsv[3])
+			commit()
+		end
+	end
+	setH = slider(p, "Hue", 0, 360, 0, 0, onSlide(1, 360))
+	setS = slider(p, "Saturation", 0, 100, 0, 0, onSlide(2, 100))
+	setV = slider(p, "Brightness", 0, 100, 0, 0, onSlide(3, 100))
+
+	button(p, "Reset to default theme", function() applyPreset(DEFAULT_THEME) end)
+
+	local note = writefile and "  Your theme is saved automatically (QQGui_theme.json)."
+		or "  This executor has no file access, so the theme won't be saved between sessions."
+	label(p, note, { Size = UDim2.new(1, 0, 0, 18), TextColor3 = DIM, TextSize = 11 })
+
+	loadSelected()
+	refreshRows()
+end
+
 local function buildSettings(p)
 	section(p, "Menu")
 	label(p, "  Right Control hides / shows this menu.", { Size = UDim2.new(1, 0, 0, 20), TextColor3 = DIM, TextSize = 12 })
+	buildThemeEditor(p)
+	section(p, "Script")
 	button(p, "Unload", unload)
 end
 
@@ -1392,5 +1674,5 @@ task.spawn(function()
 		task.wait(0.1)
 	end
 
-	statusLbl.Text = "Version 2.5 (Fire Update)"
+	statusLbl.Text = "Version 2.6 (Colors)"
 end)
